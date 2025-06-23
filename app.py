@@ -155,12 +155,24 @@ def process_csv_file(raw_csv):
         st.error(f"CSV Processing error: {e}")
         return None, None
 
+def process_excel_file(raw_excel):
+    try:
+        df = pd.read_excel(raw_excel)
+        items = df.to_dict(orient="records")
+        updated_items = validate_and_update_items(items)
+        updated_df = pd.DataFrame(updated_items)
+        updated_json = json.dumps(updated_items, indent=2)
+        return updated_df, updated_json
+    except Exception as e:
+        st.error(f"Excel Processing error: {e}")
+        return None, None
+
 # --- Streamlit UI ---
 st.title("🧠 OMOP LLM Concept Validator")
 
 uploaded_files = st.file_uploader(
-    "Upload one or more files (CSV, JSON, PDF)", 
-    type=["csv", "json", "pdf"], 
+    "Upload one or more files (CSV, JSON, PDF, Excel)", 
+    type=["csv", "json", "pdf", "xls", "xlsx"], 
     accept_multiple_files=True
 )
 
@@ -204,8 +216,20 @@ if uploaded_files:
                     mime="application/json"
                 )
 
+        elif uploaded_file.name.lower().endswith((".xls", ".xlsx")):
+            df, validated_json_str = process_excel_file(uploaded_file)
+            if df is not None:
+                st.subheader("Validated Excel Data")
+                st.dataframe(df)
+
+                st.download_button(
+                    label=f"Download Validated JSON - {uploaded_file.name}",
+                    data=validated_json_str,
+                    file_name=f"validated_{uploaded_file.name}.json",
+                    mime="application/json"
+                )
+
         elif uploaded_file.name.lower().endswith(".pdf") or file_type == "application/pdf":
-            # For PDF, just show basic info and allow download
             st.write("PDF file uploaded. Displaying download option.")
             st.download_button(
                 label=f"Download {uploaded_file.name}",
