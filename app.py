@@ -142,6 +142,13 @@ if uploaded_file:
             st.code(result_json, language="json")
             try:
                 df = pd.read_json(result_json)
+                df = df.drop(columns=[
+                    'HuggingFace - Llama3-OpenBioLLM-70B',
+                    'Anthropic- Claude 3.7 Sonnet',
+                    'OpenAI -GPT-4o (Clinical Note)',
+                    'OpenAI -GPT-4o (Json)',
+                    'Google - Med-PaLM'
+                ], errors='ignore')
                 st.dataframe(df)
 
                 # Preview tab: concept distribution
@@ -157,6 +164,13 @@ if uploaded_file:
     elif file_type in ["csv", "xlsx", "xls"]:
         try:
             df = pd.read_csv(uploaded_file) if file_type == "csv" else pd.read_excel(uploaded_file)
+            df = df.drop(columns=[
+                'HuggingFace - Llama3-OpenBioLLM-70B',
+                'Anthropic- Claude 3.7 Sonnet',
+                'OpenAI -GPT-4o (Clinical Note)',
+                'OpenAI -GPT-4o (Json)',
+                'Google - Med-PaLM'
+            ], errors='ignore')
             st.subheader("📄 Uploaded Table")
             st.dataframe(df)
             text_column = st.selectbox("Select column to process", df.columns)
@@ -195,6 +209,13 @@ if uploaded_file:
             st.subheader("✅ Validated Concepts from Notes")
             st.code(result_json, language="json")
             df = pd.read_json(result_json)
+            df = df.drop(columns=[
+                'HuggingFace - Llama3-OpenBioLLM-70B',
+                'Anthropic- Claude 3.7 Sonnet',
+                'OpenAI -GPT-4o (Clinical Note)',
+                'OpenAI -GPT-4o (Json)',
+                'Google - Med-PaLM'
+            ], errors='ignore')
             st.dataframe(df)
 
             with st.expander("📊 Preview Concept Distribution"):
