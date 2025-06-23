@@ -6,3 +6,4 @@ sentence-transformers
 openai
 langchain
 langchain-openai
+protobuf==3.20.3
