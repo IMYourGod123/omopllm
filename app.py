@@ -95,9 +95,9 @@ Return only ONE JSON object inside an array. No markdown or explanation.
         st.error(f"LLM validation error: {e}")
         return None
 
-def validate_and_update_json(raw_json_str):
+def validate_and_update_dataframe(df):
     try:
-        items = json.loads(raw_json_str)
+        items = df.to_dict(orient="records")
         updated_items = []
 
         for item in items:
@@ -116,52 +116,21 @@ def validate_and_update_json(raw_json_str):
                 })
             updated_items.append(item)
 
-        return json.dumps(updated_items, indent=2)
+        return pd.DataFrame(updated_items)
 
     except Exception as e:
         st.error(f"Validation error: {e}")
-        return raw_json_str
+        return df
 
 # ---------------------------
 # Streamlit App
 # ---------------------------
-uploaded_file = st.file_uploader("📤 Upload clinical data (JSON, CSV, Excel, PDF)", type=["json", "csv", "xlsx", "xls", "pdf"])
+uploaded_file = st.file_uploader("📤 Upload clinical data (CSV, Excel, PDF)", type=["csv", "xlsx", "xls", "pdf"])
 if uploaded_file:
     file_type = uploaded_file.name.split(".")[-1].lower()
-    extracted_texts = []
+    df = None
 
-    if file_type == "json":
-        raw_json = uploaded_file.read().decode("utf-8")
-        st.subheader("📄 Original JSON")
-        st.code(raw_json, language="json")
-
-        if st.button("🚀 Validate JSON with LLM"):
-            with st.spinner("Validating concepts using LLM..."):
-                result_json = validate_and_update_json(raw_json)
-            st.subheader("✅ Validated JSON")
-            st.code(result_json, language="json")
-            try:
-                df = pd.read_json(result_json)
-                df = df.drop(columns=[
-                    'HuggingFace - Llama3-OpenBioLLM-70B',
-                    'Anthropic- Claude 3.7 Sonnet',
-                    'OpenAI -GPT-4o (Clinical Note)',
-                    'OpenAI -GPT-4o (Json)',
-                    'Google - Med-PaLM'
-                ], errors='ignore')
-                st.dataframe(df)
-
-                # Preview tab: concept distribution
-                with st.expander("📊 Preview Concept Distribution"):
-                    if "Category" in df.columns:
-                        fig = px.histogram(df, x="Category", title="Concept Category Distribution")
-                        st.plotly_chart(fig)
-
-                st.download_button("📥 Download Validated JSON", result_json, file_name="validated_output.json", mime="application/json")
-            except Exception as e:
-                st.error(f"Error displaying dataframe: {e}")
-
-    elif file_type in ["csv", "xlsx", "xls"]:
+    if file_type in ["csv", "xlsx", "xls"]:
         try:
             df = pd.read_csv(uploaded_file) if file_type == "csv" else pd.read_excel(uploaded_file)
             df = df.drop(columns=[
@@ -171,12 +140,27 @@ if uploaded_file:
                 'OpenAI -GPT-4o (Json)',
                 'Google - Med-PaLM'
             ], errors='ignore')
+
             st.subheader("📄 Uploaded Table")
             st.dataframe(df)
-            text_column = st.selectbox("Select column to process", df.columns)
-            extracted_texts = df[text_column].dropna().tolist()
+
+            if st.button("🚀 Validate Full Table with LLM"):
+                with st.spinner("Validating entire table with LLM..."):
+                    validated_df = validate_and_update_dataframe(df)
+
+                st.subheader("✅ Validated Table")
+                st.dataframe(validated_df)
+
+                with st.expander("📊 Preview Concept Distribution"):
+                    if "Category" in validated_df.columns:
+                        fig = px.histogram(validated_df, x="Category", title="Concept Category Distribution")
+                        st.plotly_chart(fig)
+
+                st.download_button("📥 Download Validated Table", validated_df.to_json(orient="records", indent=2),
+                                   file_name="validated_output.json", mime="application/json")
+
         except Exception as e:
-            st.error(f"Error reading file: {e}")
+            st.error(f"Error processing file: {e}")
 
     elif file_type == "pdf":
         try:
@@ -185,42 +169,34 @@ if uploaded_file:
             st.subheader("📄 Extracted PDF Text")
             for i, txt in enumerate(extracted_texts):
                 st.text_area(f"Page {i+1}", txt, height=200)
+
+            if st.button("🚀 Process PDF Notes with LLM"):
+                notes_json = []
+                for text in extracted_texts:
+                    messages = [
+                        SystemMessage(content="Extract key structured concepts from clinical note into JSON."),
+                        HumanMessage(content=text)
+                    ]
+                    try:
+                        response = llm.invoke(messages)
+                        extracted = json.loads(response.content.strip())
+                        if isinstance(extracted, list):
+                            notes_json.extend(extracted)
+                    except Exception as e:
+                        st.warning(f"Extraction failed for a note: {e}")
+
+                if notes_json:
+                    validated_df = validate_and_update_dataframe(pd.DataFrame(notes_json))
+                    st.subheader("✅ Validated Concepts from PDF")
+                    st.dataframe(validated_df)
+
+                    with st.expander("📊 Preview Concept Distribution"):
+                        if "Category" in validated_df.columns:
+                            fig = px.histogram(validated_df, x="Category", title="Concept Category Distribution")
+                            st.plotly_chart(fig)
+
+                    st.download_button("📥 Download Validated Results", validated_df.to_json(orient="records", indent=2),
+                                       file_name="validated_output.json", mime="application/json")
+
         except Exception as e:
             st.error(f"Error extracting PDF text: {e}")
-
-    # Process extracted text with LLM if available
-    if extracted_texts and st.button("🚀 Process Extracted Notes with LLM"):
-        notes_json = []
-        for text in extracted_texts:
-            messages = [
-                SystemMessage(content="Extract key structured concepts from clinical note into JSON."),
-                HumanMessage(content=text)
-            ]
-            try:
-                response = llm.invoke(messages)
-                extracted = json.loads(response.content.strip())
-                if isinstance(extracted, list):
-                    notes_json.extend(extracted)
-            except Exception as e:
-                st.warning(f"Extraction failed for a note: {e}")
-
-        if notes_json:
-            result_json = validate_and_update_json(json.dumps(notes_json))
-            st.subheader("✅ Validated Concepts from Notes")
-            st.code(result_json, language="json")
-            df = pd.read_json(result_json)
-            df = df.drop(columns=[
-                'HuggingFace - Llama3-OpenBioLLM-70B',
-                'Anthropic- Claude 3.7 Sonnet',
-                'OpenAI -GPT-4o (Clinical Note)',
-                'OpenAI -GPT-4o (Json)',
-                'Google - Med-PaLM'
-            ], errors='ignore')
-            st.dataframe(df)
-
-            with st.expander("📊 Preview Concept Distribution"):
-                if "Category" in df.columns:
-                    fig = px.histogram(df, x="Category", title="Concept Category Distribution")
-                    st.plotly_chart(fig)
-
-            st.download_button("📥 Download Validated Results", result_json, file_name="validated_output.json", mime="application/json")
