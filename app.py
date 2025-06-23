@@ -168,75 +168,50 @@ def process_excel_file(raw_excel):
         return None, None
 
 # --- Streamlit UI ---
-st.title("🧠 OMOP LLM Concept Validator")
+st.title("File Upload and Processing")
 
-uploaded_files = st.file_uploader(
-    "Upload one or more files (CSV, JSON, PDF, Excel)", 
-    type=["csv", "json", "pdf", "xls", "xlsx"], 
-    accept_multiple_files=True
+uploaded_file = st.file_uploader(
+    "Upload a file (CSV, JSON, PDF, Excel)", 
+    type=["csv", "json", "pdf", "xlsx", "xls"],
+    accept_multiple_files=False
 )
 
-if uploaded_files:
-    for uploaded_file in uploaded_files:
-        st.write(f"### File: {uploaded_file.name}")
-        file_type = uploaded_file.type
+if uploaded_file:
+    file_type = uploaded_file.type
+    file_name = uploaded_file.name
 
-        if uploaded_file.name.lower().endswith(".json") or file_type == "application/json":
-            raw_json = uploaded_file.read().decode("utf-8")
-            st.subheader("Original JSON")
-            st.code(raw_json, language="json")
+    if file_name.endswith((".xlsx", ".xls")):
+        try:
+            # Read Excel file, first sheet by default
+            df = pd.read_excel(uploaded_file, sheet_name=0)
 
-            if st.button(f"Validate {uploaded_file.name}"):
-                st.info("Running validation...")
-                validated_json_str, updated_items = process_json_file(raw_json)
-                if updated_items is not None:
-                    st.subheader("Validated JSON")
-                    st.code(validated_json_str, language="json")
+            # Columns to drop (check if they exist first)
+            drop_cols = ['HuggingFace - Llama3-OpenBioLLM-70B', 
+                         'Anthropic- Claude 3.7 Sonnet', 
+                         'OpenAI -GPT-4o (Clinical Note)', 
+                         'OpenAI -GPT-4o (Json)', 
+                         'Google - Med-PaLM']
+            existing_cols_to_drop = [col for col in drop_cols if col in df.columns]
+            df = df.drop(columns=existing_cols_to_drop)
 
-                    df = pd.DataFrame(updated_items)
-                    st.dataframe(df)
+            st.subheader("Excel Data after dropping specific columns")
+            st.dataframe(df.head())
+        except Exception as e:
+            st.error(f"Excel Processing error: {e}")
 
-                    st.download_button(
-                        label=f"Download Validated JSON - {uploaded_file.name}",
-                        data=validated_json_str,
-                        file_name=f"validated_{uploaded_file.name}",
-                        mime="application/json"
-                    )
+    elif file_name.endswith(".csv"):
+        df = pd.read_csv(uploaded_file)
+        st.subheader("CSV Data")
+        st.dataframe(df.head())
 
-        elif uploaded_file.name.lower().endswith(".csv") or file_type == "text/csv":
-            df, validated_json_str = process_csv_file(uploaded_file)
-            if df is not None:
-                st.subheader("Validated CSV Data")
-                st.dataframe(df)
+    elif file_name.endswith(".json"):
+        raw_json = uploaded_file.read().decode("utf-8")
+        st.subheader("JSON Data")
+        st.json(raw_json)
 
-                st.download_button(
-                    label=f"Download Validated JSON - {uploaded_file.name}",
-                    data=validated_json_str,
-                    file_name=f"validated_{uploaded_file.name}.json",
-                    mime="application/json"
-                )
+    elif file_name.endswith(".pdf"):
+        st.info("PDF upload detected — implement your PDF processing here")
+        # Implement PDF parsing if needed
 
-        elif uploaded_file.name.lower().endswith((".xls", ".xlsx")):
-            df, validated_json_str = process_excel_file(uploaded_file)
-            if df is not None:
-                st.subheader("Validated Excel Data")
-                st.dataframe(df)
-
-                st.download_button(
-                    label=f"Download Validated JSON - {uploaded_file.name}",
-                    data=validated_json_str,
-                    file_name=f"validated_{uploaded_file.name}.json",
-                    mime="application/json"
-                )
-
-        elif uploaded_file.name.lower().endswith(".pdf") or file_type == "application/pdf":
-            st.write("PDF file uploaded. Displaying download option.")
-            st.download_button(
-                label=f"Download {uploaded_file.name}",
-                data=uploaded_file.getvalue(),
-                file_name=uploaded_file.name,
-                mime="application/pdf"
-            )
-
-        else:
-            st.warning(f"Unsupported file type for {uploaded_file.name}")
+    else:
+        st.warning("Unsupported file type")
