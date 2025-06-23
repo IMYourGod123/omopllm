@@ -1,3 +1,15 @@
+import sys
+import os
+
+# Patch sqlite3 with pysqlite3 if available
+os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"  # Optional protobuf fix
+try:
+    import pysqlite3
+    sys.modules["sqlite3"] = pysqlite3
+except ImportError:
+    pass
+
+
 import streamlit as st
 import json
 import pandas as pd
