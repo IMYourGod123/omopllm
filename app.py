@@ -18,9 +18,11 @@ from sentence_transformers import SentenceTransformer
 from langchain_openai import ChatOpenAI
 from langchain.schema import SystemMessage, HumanMessage
 
-# Load embedding model
-device = "cuda" if torch.cuda.is_available() else "cpu"
+# Force CPU device to avoid GPU issues
+device = "cpu"
 st.info(f"Using device: {device}")
+
+# Load embedding model
 model = SentenceTransformer("neuml/pubmedbert-base-embeddings", device=device)
 
 # Connect ChromaDB collections
@@ -104,92 +106,113 @@ Candidates:
         st.error(f"LLM validation error: {e}")
         return None
 
+def validate_and_update_items(items):
+    updated_items = []
 
-def process_dataframe(df):
-    updated_rows = []
-    correct_count = 0
-    total = 0
+    for item in items:
+        clinical_item = item.get("Clinical Item") or item.get("clinical_item")
+        category = item.get("Category") or item.get("category")
+        description = item.get("Description") or item.get("description", "")
 
-    for idx, row in df.iterrows():
-        clinical_item = row.get("Clinical Item") or row.get("clinical_item")
-        category = row.get("Category") or row.get("category")
-        description = row.get("Description") or row.get("description", "")
-        gold_code = row.get("Code") or row.get("code", None)
-
-        if pd.isna(clinical_item) or pd.isna(category):
-            # Skip rows without these
-            updated_rows.append(row)
+        if not clinical_item or not category:
+            # Skip incomplete records
+            updated_items.append(item)
             continue
 
-        match = llm_validated_concept_match(str(clinical_item), str(category), str(description))
+        match = llm_validated_concept_match(clinical_item, category, description)
 
-        updated_row = row.copy()
         if match:
-            updated_row["Predicted Concept Name"] = match.get("concept_name")
-            updated_row["Predicted Code"] = match.get("concept_id")
-            updated_row["Predicted Domain"] = match.get("domain_id")
-            updated_row["Coding System"] = "OMOPCDM"
+            item["Clinical Item"] = match["concept_name"]
+            item["Code"] = match["concept_id"]
+            item["Coding System"] = "OMOPCDM"
+            item["Category"] = match["domain_id"]
 
-            if gold_code and not pd.isna(gold_code):
-                total += 1
-                if str(gold_code).strip() == str(match.get("concept_id")).strip():
-                    correct_count += 1
-        else:
-            updated_row["Predicted Concept Name"] = "No match"
-            updated_row["Predicted Code"] = None
+        updated_items.append(item)
 
-        updated_rows.append(updated_row)
+    return updated_items
 
-    result_df = pd.DataFrame(updated_rows)
-    accuracy = (correct_count / total * 100) if total > 0 else None
-    return result_df, accuracy
+def process_json_file(raw_json):
+    try:
+        items = json.loads(raw_json)
+        updated_items = validate_and_update_items(items)
+        return json.dumps(updated_items, indent=2), updated_items
+    except Exception as e:
+        st.error(f"JSON Processing error: {e}")
+        return raw_json, None
 
+def process_csv_file(raw_csv):
+    try:
+        df = pd.read_csv(raw_csv)
+        # Convert dataframe to list of dicts
+        items = df.to_dict(orient="records")
+        updated_items = validate_and_update_items(items)
+        # Convert back to dataframe for display
+        updated_df = pd.DataFrame(updated_items)
+        # Also get JSON string for download
+        updated_json = json.dumps(updated_items, indent=2)
+        return updated_df, updated_json
+    except Exception as e:
+        st.error(f"CSV Processing error: {e}")
+        return None, None
 
 # --- Streamlit UI ---
 st.title("🧠 OMOP LLM Concept Validator")
 
-uploaded_file = st.file_uploader("Upload file", type=["json", "csv", "pdf"])
+uploaded_files = st.file_uploader(
+    "Upload one or more files (CSV, JSON, PDF)", 
+    type=["csv", "json", "pdf"], 
+    accept_multiple_files=True
+)
 
-if uploaded_file:
-    file_type = uploaded_file.type
-    filename = uploaded_file.name
+if uploaded_files:
+    for uploaded_file in uploaded_files:
+        st.write(f"### File: {uploaded_file.name}")
+        file_type = uploaded_file.type
 
-    if filename.endswith(".json"):
-        raw_json = uploaded_file.read().decode("utf-8")
-        st.subheader("Original JSON")
-        st.code(raw_json, language="json")
+        if uploaded_file.name.lower().endswith(".json") or file_type == "application/json":
+            raw_json = uploaded_file.read().decode("utf-8")
+            st.subheader("Original JSON")
+            st.code(raw_json, language="json")
 
-        if st.button("Validate with LLM"):
-            st.info("Running validation on JSON...")
-            result_json = validate_and_update_json(raw_json)
-            st.subheader("Validated JSON")
-            st.code(result_json, language="json")
+            if st.button(f"Validate {uploaded_file.name}"):
+                st.info("Running validation...")
+                validated_json_str, updated_items = process_json_file(raw_json)
+                if updated_items is not None:
+                    st.subheader("Validated JSON")
+                    st.code(validated_json_str, language="json")
 
-            df = pd.read_json(result_json)
-            st.dataframe(df)
+                    df = pd.DataFrame(updated_items)
+                    st.dataframe(df)
 
-            st.download_button("Download Validated JSON", result_json, file_name="validated_output.json", mime="application/json")
+                    st.download_button(
+                        label=f"Download Validated JSON - {uploaded_file.name}",
+                        data=validated_json_str,
+                        file_name=f"validated_{uploaded_file.name}",
+                        mime="application/json"
+                    )
 
-    elif filename.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-        st.subheader("Uploaded CSV Data")
-        st.dataframe(df)
+        elif uploaded_file.name.lower().endswith(".csv") or file_type == "text/csv":
+            df, validated_json_str = process_csv_file(uploaded_file)
+            if df is not None:
+                st.subheader("Validated CSV Data")
+                st.dataframe(df)
 
-        if st.button("Validate with LLM"):
-            st.info("Running validation on CSV...")
-            result_df, accuracy = process_dataframe(df)
+                st.download_button(
+                    label=f"Download Validated JSON - {uploaded_file.name}",
+                    data=validated_json_str,
+                    file_name=f"validated_{uploaded_file.name}.json",
+                    mime="application/json"
+                )
 
-            st.subheader("Validated CSV Data")
-            st.dataframe(result_df)
+        elif uploaded_file.name.lower().endswith(".pdf") or file_type == "application/pdf":
+            # For PDF, just show basic info and allow download
+            st.write("PDF file uploaded. Displaying download option.")
+            st.download_button(
+                label=f"Download {uploaded_file.name}",
+                data=uploaded_file.getvalue(),
+                file_name=uploaded_file.name,
+                mime="application/pdf"
+            )
 
-            if accuracy is not None:
-                st.success(f"Accuracy (matching 'Code' column): {accuracy:.2f}%")
-
-            csv_output = result_df.to_csv(index=False)
-            st.download_button("Download Validated CSV", csv_output, file_name="validated_output.csv", mime="text/csv")
-
-    elif filename.endswith(".pdf"):
-        st.warning("PDF upload detected. PDF processing is not yet supported.")
-        # Optional: you can integrate PDF text extraction libraries like PyMuPDF or pdfplumber here
-    else:
-        st.error("Unsupported file type. Please upload JSON, CSV, or PDF.")
+        else:
+            st.warning(f"Unsupported file type for {uploaded_file.name}")
