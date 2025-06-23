@@ -177,7 +177,7 @@ if uploaded_file:
             ], errors='ignore')
 
             st.subheader("📄 Uploaded Table")
-            st.dataframe(df[["UnformattedText", "EditedText"]])
+            st.dataframe(df[["UnformattedText"]])
 
             if st.button("🚀 Validate Full Table with LLM"):
                 with st.spinner("Validating entire table with LLM..."):
@@ -185,20 +185,16 @@ if uploaded_file:
 
                 st.subheader("✅ Validated Table")
                 for idx, row in validated_df.iterrows():
-    st.markdown("---")
-    st.markdown(f"**Original Note:**
-
-{row['UnformattedText']}")
-    st.markdown(f"**Edited Note:**
-
-{row['EditedText']}")
-    st.markdown("**🧾 Extracted Concepts:**")
-    try:
-        concepts = json.loads(row['Jsonformatted'])
-        for concept in concepts:
-            st.json(concept)
-    except Exception as e:
-        st.warning(f"Failed to parse concepts: {e}")
+                    st.markdown("---")
+                    st.markdown(f"**Original Note:**\n\n{row['UnformattedText']}")
+                    st.markdown(f"**Edited Note:**\n\n{row['EditedText']}")
+                    st.markdown("**🧾 Extracted Concepts:**")
+                    try:
+                        concepts = json.loads(row['Jsonformatted'])
+                        for concept in concepts:
+                            st.json(concept)
+                    except Exception as e:
+                        st.warning(f"Failed to parse concepts: {e}")
 
                 st.download_button("📥 Download Validated Table", validated_df.to_json(orient="records", indent=2),
                                    file_name="validated_output.json", mime="application/json")
