@@ -2,7 +2,7 @@ import sys
 import os
 
 # Patch sqlite3 with pysqlite3 if available
-os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"  # Optional protobuf fix
+os.environ["PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION"] = "python"
 try:
     import pysqlite3
     sys.modules["sqlite3"] = pysqlite3
@@ -17,25 +17,29 @@ import chromadb
 from sentence_transformers import SentenceTransformer
 from langchain_openai import ChatOpenAI
 from langchain.schema import SystemMessage, HumanMessage
+import fitz  # PyMuPDF for PDF reading
+import plotly.express as px
 
-# Force CPU device to avoid GPU issues
-device = "cpu"
-st.info(f"Using device: {device}")
+# ---------------------------
+# Initialization
+# ---------------------------
+st.set_page_config(page_title="OMOP LLM Concept Validator", layout="wide")
+st.title("🧠 OMOP LLM Concept Validator")
 
 # Load embedding model
+device = "cuda" if torch.cuda.is_available() else "cpu"
+st.info(f"Using device: {device}")
 model = SentenceTransformer("neuml/pubmedbert-base-embeddings", device=device)
 
-# Connect ChromaDB collections
+# Load ChromaDB collections
 chroma_client = chromadb.PersistentClient()
-
-collection_concept_embeddings_observation_domain = chroma_client.get_or_create_collection(name='concept_embeddings_observation_domain')
-collection_concept_embeddings_condition_domain = chroma_client.get_or_create_collection(name='concept_embeddings_condition_domain')
-collection_concept_embeddings_procedure_domain = chroma_client.get_or_create_collection(name='concept_embeddings_procedure_domain')
-collection_concept_embeddings_drug_domain = chroma_client.get_or_create_collection(name='concept_embeddings_drug_domain')
-collection_concept_embeddings_measurement_domain = chroma_client.get_or_create_collection(name='concept_embeddings_measurement_domain')
-
-# Load LLM
-llm = ChatOpenAI(model="gpt-4", temperature=0)
+domain_collections = {
+    "Observation": chroma_client.get_or_create_collection("concept_embeddings_observation_domain"),
+    "Condition": chroma_client.get_or_create_collection("concept_embeddings_condition_domain"),
+    "Procedure": chroma_client.get_or_create_collection("concept_embeddings_procedure_domain"),
+    "Drug": chroma_client.get_or_create_collection("concept_embeddings_drug_domain"),
+    "Measurement": chroma_client.get_or_create_collection("concept_embeddings_measurement_domain"),
+}
 
 category_to_domain = {
     "Diagnosis": "Condition", "Diagnoses": "Condition",
@@ -45,22 +49,20 @@ category_to_domain = {
     "Observation": "Observation", "Observations": "Observation"
 }
 
+# Load LLM
+llm = ChatOpenAI(model="gpt-4", temperature=0)
+
+# ---------------------------
+# Functions
+# ---------------------------
 def llm_validated_concept_match(clinical_item, original_category, description):
     try:
         expected_domain = category_to_domain.get(original_category)
-        if expected_domain is None:
+        if not expected_domain:
             return None
 
-        domain_to_collection = {
-            "Observation": collection_concept_embeddings_observation_domain,
-            "Condition": collection_concept_embeddings_condition_domain,
-            "Procedure": collection_concept_embeddings_procedure_domain,
-            "Drug": collection_concept_embeddings_drug_domain,
-            "Measurement": collection_concept_embeddings_measurement_domain
-        }
-
-        collection = domain_to_collection.get(expected_domain)
-        if collection is None:
+        collection = domain_collections.get(expected_domain)
+        if not collection:
             return None
 
         query_text = f"{clinical_item} - {description}: {expected_domain}"
@@ -75,143 +77,129 @@ def llm_validated_concept_match(clinical_item, original_category, description):
         messages = [
             SystemMessage(content="You are a clinical coding expert using OMOP CDM."),
             HumanMessage(content=f"""
-You are an expert in mapping clinical terms to OMOP CDM concepts.
-
-You are given:
-- A **clinical term** from a doctor’s note
-- A **description** that provides important clinical context (often a brand name or clarification)
-- An **expected OMOP domain**
-- A list of 30 **OMOP candidate concepts** (already filtered semantically)
-
-🎯 Your goal is to select the **single most appropriate concept** that matches the intended meaning.
-
-📌 Format requirement:
-- Return a **raw JSON array with ONE object only**
-- No markdown, no extra explanation
-
+Select the best OMOP concept.
 Clinical Term: "{clinical_item}"
 Description: "{description}"
 Expected Domain: "{expected_domain}"
-
 Candidates:
 {json.dumps(candidate_concepts)}
+Return only ONE JSON object inside an array. No markdown or explanation.
 """)
         ]
 
         response = llm.invoke(messages)
         selected = json.loads(response.content.strip())
-        return selected[0]
+        return selected[0] if selected else None
 
     except Exception as e:
         st.error(f"LLM validation error: {e}")
         return None
 
-def validate_and_update_items(items):
-    updated_items = []
+def validate_and_update_json(raw_json_str):
+    try:
+        items = json.loads(raw_json_str)
+        updated_items = []
 
-    for item in items:
-        clinical_item = item.get("Clinical Item") or item.get("clinical_item")
-        category = item.get("Category") or item.get("category")
-        description = item.get("Description") or item.get("description", "")
+        for item in items:
+            clinical_item = item.get("Clinical Item")
+            category = item.get("Category")
+            description = item.get("Description", "")
 
-        if not clinical_item or not category:
-            # Skip incomplete records
+            match = llm_validated_concept_match(clinical_item, category, description)
+
+            if match:
+                item.update({
+                    "Clinical Item": match["concept_name"],
+                    "Code": match["concept_id"],
+                    "Coding System": "OMOPCDM",
+                    "Category": match["domain_id"]
+                })
             updated_items.append(item)
-            continue
 
-        match = llm_validated_concept_match(clinical_item, category, description)
+        return json.dumps(updated_items, indent=2)
 
-        if match:
-            item["Clinical Item"] = match["concept_name"]
-            item["Code"] = match["concept_id"]
-            item["Coding System"] = "OMOPCDM"
-            item["Category"] = match["domain_id"]
-
-        updated_items.append(item)
-
-    return updated_items
-
-def process_json_file(raw_json):
-    try:
-        items = json.loads(raw_json)
-        updated_items = validate_and_update_items(items)
-        return json.dumps(updated_items, indent=2), updated_items
     except Exception as e:
-        st.error(f"JSON Processing error: {e}")
-        return raw_json, None
+        st.error(f"Validation error: {e}")
+        return raw_json_str
 
-def process_csv_file(raw_csv):
-    try:
-        df = pd.read_csv(raw_csv)
-        # Convert dataframe to list of dicts
-        items = df.to_dict(orient="records")
-        updated_items = validate_and_update_items(items)
-        # Convert back to dataframe for display
-        updated_df = pd.DataFrame(updated_items)
-        # Also get JSON string for download
-        updated_json = json.dumps(updated_items, indent=2)
-        return updated_df, updated_json
-    except Exception as e:
-        st.error(f"CSV Processing error: {e}")
-        return None, None
-
-def process_excel_file(raw_excel):
-    try:
-        df = pd.read_excel(raw_excel)
-        items = df.to_dict(orient="records")
-        updated_items = validate_and_update_items(items)
-        updated_df = pd.DataFrame(updated_items)
-        updated_json = json.dumps(updated_items, indent=2)
-        return updated_df, updated_json
-    except Exception as e:
-        st.error(f"Excel Processing error: {e}")
-        return None, None
-
-# --- Streamlit UI ---
-st.title("File Upload and Processing")
-
-uploaded_file = st.file_uploader(
-    "Upload a file (CSV, JSON, PDF, Excel)", 
-    type=["csv", "json", "pdf", "xlsx", "xls"],
-    accept_multiple_files=False
-)
-
+# ---------------------------
+# Streamlit App
+# ---------------------------
+uploaded_file = st.file_uploader("📤 Upload clinical data (JSON, CSV, Excel, PDF)", type=["json", "csv", "xlsx", "xls", "pdf"])
 if uploaded_file:
-    file_type = uploaded_file.type
-    file_name = uploaded_file.name
+    file_type = uploaded_file.name.split(".")[-1].lower()
+    extracted_texts = []
 
-    if file_name.endswith((".xlsx", ".xls")):
-        try:
-            # Read Excel file, first sheet by default
-            df = pd.read_excel(uploaded_file, sheet_name=0)
-
-            # Columns to drop (check if they exist first)
-            drop_cols = ['HuggingFace - Llama3-OpenBioLLM-70B', 
-                         'Anthropic- Claude 3.7 Sonnet', 
-                         'OpenAI -GPT-4o (Clinical Note)', 
-                         'OpenAI -GPT-4o (Json)', 
-                         'Google - Med-PaLM']
-            existing_cols_to_drop = [col for col in drop_cols if col in df.columns]
-            df = df.drop(columns=existing_cols_to_drop)
-
-            st.subheader("Excel Data after dropping specific columns")
-            st.dataframe(df.head())
-        except Exception as e:
-            st.error(f"Excel Processing error: {e}")
-
-    elif file_name.endswith(".csv"):
-        df = pd.read_csv(uploaded_file)
-        st.subheader("CSV Data")
-        st.dataframe(df.head())
-
-    elif file_name.endswith(".json"):
+    if file_type == "json":
         raw_json = uploaded_file.read().decode("utf-8")
-        st.subheader("JSON Data")
-        st.json(raw_json)
+        st.subheader("📄 Original JSON")
+        st.code(raw_json, language="json")
 
-    elif file_name.endswith(".pdf"):
-        st.info("PDF upload detected — implement your PDF processing here")
-        # Implement PDF parsing if needed
+        if st.button("🚀 Validate JSON with LLM"):
+            with st.spinner("Validating concepts using LLM..."):
+                result_json = validate_and_update_json(raw_json)
+            st.subheader("✅ Validated JSON")
+            st.code(result_json, language="json")
+            try:
+                df = pd.read_json(result_json)
+                st.dataframe(df)
 
-    else:
-        st.warning("Unsupported file type")
+                # Preview tab: concept distribution
+                with st.expander("📊 Preview Concept Distribution"):
+                    if "Category" in df.columns:
+                        fig = px.histogram(df, x="Category", title="Concept Category Distribution")
+                        st.plotly_chart(fig)
+
+                st.download_button("📥 Download Validated JSON", result_json, file_name="validated_output.json", mime="application/json")
+            except Exception as e:
+                st.error(f"Error displaying dataframe: {e}")
+
+    elif file_type in ["csv", "xlsx", "xls"]:
+        try:
+            df = pd.read_csv(uploaded_file) if file_type == "csv" else pd.read_excel(uploaded_file)
+            st.subheader("📄 Uploaded Table")
+            st.dataframe(df)
+            text_column = st.selectbox("Select column to process", df.columns)
+            extracted_texts = df[text_column].dropna().tolist()
+        except Exception as e:
+            st.error(f"Error reading file: {e}")
+
+    elif file_type == "pdf":
+        try:
+            pdf = fitz.open(stream=uploaded_file.read(), filetype="pdf")
+            extracted_texts = [page.get_text() for page in pdf]
+            st.subheader("📄 Extracted PDF Text")
+            for i, txt in enumerate(extracted_texts):
+                st.text_area(f"Page {i+1}", txt, height=200)
+        except Exception as e:
+            st.error(f"Error extracting PDF text: {e}")
+
+    # Process extracted text with LLM if available
+    if extracted_texts and st.button("🚀 Process Extracted Notes with LLM"):
+        notes_json = []
+        for text in extracted_texts:
+            messages = [
+                SystemMessage(content="Extract key structured concepts from clinical note into JSON."),
+                HumanMessage(content=text)
+            ]
+            try:
+                response = llm.invoke(messages)
+                extracted = json.loads(response.content.strip())
+                if isinstance(extracted, list):
+                    notes_json.extend(extracted)
+            except Exception as e:
+                st.warning(f"Extraction failed for a note: {e}")
+
+        if notes_json:
+            result_json = validate_and_update_json(json.dumps(notes_json))
+            st.subheader("✅ Validated Concepts from Notes")
+            st.code(result_json, language="json")
+            df = pd.read_json(result_json)
+            st.dataframe(df)
+
+            with st.expander("📊 Preview Concept Distribution"):
+                if "Category" in df.columns:
+                    fig = px.histogram(df, x="Category", title="Concept Category Distribution")
+                    st.plotly_chart(fig)
+
+            st.download_button("📥 Download Validated Results", result_json, file_name="validated_output.json", mime="application/json")
