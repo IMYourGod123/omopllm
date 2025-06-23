@@ -55,6 +55,55 @@ llm = ChatOpenAI(model="gpt-4", temperature=0)
 # ---------------------------
 # Functions
 # ---------------------------
+def get_edited_note(note):
+    messages = [
+        SystemMessage(content="You are a medical note editor for a hospital in Malaysia."),
+        HumanMessage(
+            content=f"""
+            Your task is to rephrase medical notes into full and proper sentences and structured, expand all abbreviations, and make the language more formal and suitable for official documentation based on the Dataframe column called UnformattedText. Maintain the original meaning of the note while ensuring clarity, accuracy, and a professional tone. 
+
+            Return only the revised and structured medical note without extra commentary and avoid Markdown-style formatting.
+            Medical Note: 
+            {note}
+            """
+        ),
+    ]
+    response = llm.invoke(messages)
+    return response.content
+
+def get_formatted_json(note):
+    messages = [
+        SystemMessage(content="You are a clinical coding assistant."),
+        HumanMessage(
+            content=f"""
+        From the medical note below, perform the following tasks:
+        1. Extract and classify all relevant clinical information into the following five categories:
+        Diagnosis: All identified conditions or diseases (past or present).
+        Medication: Any prescribed or recommended drugs or supplements.
+        Measurement: Any clinical findings or test results (e.g., lab values, imaging findings, physical exam results).
+        Procedures: Any performed or planned medical procedures, tests, or imaging.
+        Observations: Clinical symptoms, patient-reported issues, or clinician-noted changes in condition.
+
+        2. For each extracted item, return the best-matching standard medical code and description using the appropriate coding system.
+        Use ICD-10-CM for Diagnosis and Procedures.
+        Use RxNorm for Medication.
+        Use LOINC for Measurement and Observations.
+
+        3. When applicable, capture and return the associated value or quantity for Medication (e.g., dose, frequency) and Measurement (e.g., lab values, vital signs) in a separate field named Value.
+
+        4. Return the output in a JSON format with the following columns:
+        Category | Clinical Item | Value | Code | Coding System | Description
+
+        ⚠️ IMPORTANT: Return only the raw JSON array. Do NOT wrap it in triple backticks or use markdown formatting (e.g., ```json).
+
+        Medical Note: 
+        {note}
+        """
+        ),
+    ]
+    response = llm.invoke(messages)
+    return response.content
+
 def llm_validated_concept_match(clinical_item, original_category, description):
     try:
         expected_domain = category_to_domain.get(original_category)
@@ -97,28 +146,12 @@ Return only ONE JSON object inside an array. No markdown or explanation.
 
 def validate_and_update_dataframe(df):
     try:
-        items = df.to_dict(orient="records")
-        updated_items = []
+        if "UnformattedText" in df.columns:
+            with st.spinner("Preprocessing medical notes with LLM..."):
+                df["EditedText"] = df["UnformattedText"].apply(get_edited_note)
+                df["Jsonformatted"] = df["EditedText"].apply(get_formatted_json)
 
-        for item in items:
-            clinical_item = item.get("Clinical Item")
-            category = item.get("Category")
-            description = item.get("Description", "")
-
-            match = llm_validated_concept_match(clinical_item, category, description)
-
-            if match:
-                item.update({
-                    "Category": category,
-                    "Clinical Item": match.get("concept_name"),
-                    "Value": None,
-                    "Code": match.get("concept_id"),
-                    "Coding System": match.get("vocabulary_id", "OMOPCDM"),
-                    "Description": match.get("concept_description")
-                })
-            updated_items.append(item)
-
-        return pd.DataFrame(updated_items)
+        return df
 
     except Exception as e:
         st.error(f"Validation error: {e}")
@@ -144,61 +177,31 @@ if uploaded_file:
             ], errors='ignore')
 
             st.subheader("📄 Uploaded Table")
-            st.dataframe(df)
+            st.dataframe(df[["UnformattedText", "EditedText"]])
 
             if st.button("🚀 Validate Full Table with LLM"):
                 with st.spinner("Validating entire table with LLM..."):
                     validated_df = validate_and_update_dataframe(df)
 
                 st.subheader("✅ Validated Table")
-                st.dataframe(validated_df)
+                for idx, row in validated_df.iterrows():
+    st.markdown("---")
+    st.markdown(f"**Original Note:**
 
-                with st.expander("📊 Preview Concept Distribution"):
-                    if "Category" in validated_df.columns:
-                        fig = px.histogram(validated_df, x="Category", title="Concept Category Distribution")
-                        st.plotly_chart(fig)
+{row['UnformattedText']}")
+    st.markdown(f"**Edited Note:**
+
+{row['EditedText']}")
+    st.markdown("**🧾 Extracted Concepts:**")
+    try:
+        concepts = json.loads(row['Jsonformatted'])
+        for concept in concepts:
+            st.json(concept)
+    except Exception as e:
+        st.warning(f"Failed to parse concepts: {e}")
 
                 st.download_button("📥 Download Validated Table", validated_df.to_json(orient="records", indent=2),
                                    file_name="validated_output.json", mime="application/json")
 
         except Exception as e:
             st.error(f"Error processing file: {e}")
-
-    elif file_type == "pdf":
-        try:
-            pdf = fitz.open(stream=uploaded_file.read(), filetype="pdf")
-            extracted_texts = [page.get_text() for page in pdf]
-            st.subheader("📄 Extracted PDF Text")
-            for i, txt in enumerate(extracted_texts):
-                st.text_area(f"Page {i+1}", txt, height=200)
-
-            if st.button("🚀 Process PDF Notes with LLM"):
-                notes_json = []
-                for text in extracted_texts:
-                    messages = [
-                        SystemMessage(content="Extract key structured concepts from clinical note into JSON."),
-                        HumanMessage(content=text)
-                    ]
-                    try:
-                        response = llm.invoke(messages)
-                        extracted = json.loads(response.content.strip())
-                        if isinstance(extracted, list):
-                            notes_json.extend(extracted)
-                    except Exception as e:
-                        st.warning(f"Extraction failed for a note: {e}")
-
-                if notes_json:
-                    validated_df = validate_and_update_dataframe(pd.DataFrame(notes_json))
-                    st.subheader("✅ Validated Concepts from PDF")
-                    st.dataframe(validated_df)
-
-                    with st.expander("📊 Preview Concept Distribution"):
-                        if "Category" in validated_df.columns:
-                            fig = px.histogram(validated_df, x="Category", title="Concept Category Distribution")
-                            st.plotly_chart(fig)
-
-                    st.download_button("📥 Download Validated Results", validated_df.to_json(orient="records", indent=2),
-                                       file_name="validated_output.json", mime="application/json")
-
-        except Exception as e:
-            st.error(f"Error extracting PDF text: {e}")
