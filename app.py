@@ -109,10 +109,12 @@ def validate_and_update_dataframe(df):
 
             if match:
                 item.update({
-                    "Clinical Item": match["concept_name"],
-                    "Code": match["concept_id"],
-                    "Coding System": "OMOPCDM",
-                    "Category": match["domain_id"]
+                    "Category": category,
+                    "Clinical Item": match.get("concept_name"),
+                    "Value": None,
+                    "Code": match.get("concept_id"),
+                    "Coding System": match.get("vocabulary_id", "OMOPCDM"),
+                    "Description": match.get("concept_description")
                 })
             updated_items.append(item)
 
