@@ -12,3 +12,4 @@ pymupdf
 openpyxl
 plotly
 boto3
+pyspark
