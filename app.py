@@ -191,8 +191,8 @@ if uploaded_file:
                     st.markdown("**🧾 Extracted Concepts:**")
                     try:
                         concepts = json.loads(row['Jsonformatted'])
-                        for concept in concepts:
-                            st.json(concept)
+                        concept_text = "\n\n".join([json.dumps(c, indent=2) for c in concepts])
+                        st.markdown(f"```json\n{concept_text}\n```")
                     except Exception as e:
                         st.warning(f"Failed to parse concepts: {e}")
 
