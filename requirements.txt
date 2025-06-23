@@ -1,4 +1,6 @@
 streamlit
 pandas
 langchain
-your-llm-library-name
+openai
+sentence-transformers
+chromadb
