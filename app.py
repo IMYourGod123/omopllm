@@ -1,18 +1,28 @@
 import streamlit as st
 import json
 import pandas as pd
+import torch
+import chromadb
+from sentence_transformers import SentenceTransformer
+from langchain_openai import ChatOpenAI
+from langchain.schema import SystemMessage, HumanMessage
 
-# Simulated LLM & embedding model (replace with your real implementations)
-from your_llm_library import llm, model
-from your_vector_collections import (
-    collection_concept_embeddings_observation_domain,
-    collection_concept_embeddings_condition_domain,
-    collection_concept_embeddings_procedure_domain,
-    collection_concept_embeddings_drug_domain,
-    collection_concept_embeddings_measurement_domain
-)
-from langchain.schema import SystemMessage, HumanMessage  # or adjust to your LLM framework
+# Load embedding model
+device = "cuda" if torch.cuda.is_available() else "cpu"
+st.info(f"Using device: {device}")
+model = SentenceTransformer("neuml/pubmedbert-base-embeddings", device=device)
 
+# Connect ChromaDB collections
+chroma_client = chromadb.PersistentClient()
+
+collection_concept_embeddings_observation_domain = chroma_client.get_or_create_collection(name='concept_embeddings_observation_domain')
+collection_concept_embeddings_condition_domain = chroma_client.get_or_create_collection(name='concept_embeddings_condition_domain')
+collection_concept_embeddings_procedure_domain = chroma_client.get_or_create_collection(name='concept_embeddings_procedure_domain')
+collection_concept_embeddings_drug_domain = chroma_client.get_or_create_collection(name='concept_embeddings_drug_domain')
+collection_concept_embeddings_measurement_domain = chroma_client.get_or_create_collection(name='concept_embeddings_measurement_domain')
+
+# Load LLM
+llm = ChatOpenAI(model="gpt-4", temperature=0)
 
 category_to_domain = {
     "Diagnosis": "Condition", "Diagnoses": "Condition",
@@ -41,7 +51,7 @@ def llm_validated_concept_match(clinical_item, original_category, description):
             return None
 
         query_text = f"{clinical_item} - {description}: {expected_domain}"
-        embedding = model.encode(query_text)
+        embedding = model.encode(query_text).tolist()
         results = collection.query(query_embeddings=[embedding], n_results=30)
 
         if not results.get("documents") or not results["documents"][0]:
@@ -83,7 +93,6 @@ Candidates:
         st.error(f"LLM validation error: {e}")
         return None
 
-
 def validate_and_update_json(raw_json_str):
     try:
         items = json.loads(raw_json_str)
@@ -109,9 +118,8 @@ def validate_and_update_json(raw_json_str):
         st.error(f"Validation error: {e}")
         return raw_json_str
 
-
-# --------- Streamlit App UI ---------
-st.title("OMOP Concept Validator")
+# --- Streamlit UI ---
+st.title("🧠 OMOP LLM Concept Validator")
 
 uploaded_file = st.file_uploader("Upload JSON file", type=["json"])
 if uploaded_file:
@@ -120,7 +128,7 @@ if uploaded_file:
     st.code(raw_json, language="json")
 
     if st.button("Validate with LLM"):
-        st.info("Validating concepts using LLM...")
+        st.info("Running validation...")
         result_json = validate_and_update_json(raw_json)
 
         st.subheader("Validated JSON")
@@ -130,4 +138,3 @@ if uploaded_file:
         st.dataframe(df)
 
         st.download_button("Download Validated JSON", result_json, file_name="validated_output.json", mime="application/json")
-s
